@@ -40,6 +40,16 @@ async function call(name, data, account, signal) {
     body: JSON.stringify(data), signal, redirect: "error",
   })
   if (!response.ok) {
+    // Diagnostic seam, off unless NOTION_BRIDGE_TRACE is set: an upstream 4xx
+    // otherwise reaches the client as one generic sentence with no endpoint and
+    // no reason, which is not enough to tell a stale thread from a bad payload.
+    if (process.env.NOTION_BRIDGE_TRACE) {
+      try {
+        const { appendFileSync } = await import("node:fs")
+        const said = await response.clone().text().catch(() => "")
+        appendFileSync("/tmp/notion-upstream.log", `${new Date().toISOString()} ${name} HTTP ${response.status} ${said.slice(0, 1200).replace(/\s+/g, " ")}\n`)
+      } catch {}
+    }
     await response.body?.cancel().catch(() => {})
     const code = response.status === 401 ? "session_expired" : response.status === 403 ? "workspace_forbidden" : response.status === 429 ? "rate_limited" : "upstream_http_error"
     throw new ProviderError(response.status, code, `Notion AI refused the request (HTTP ${response.status}).`)
