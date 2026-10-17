@@ -1,0 +1,25 @@
+{
+  "name": "notion-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Notion AI as a magpie provider with working tool calls: the transport's single assistant text is bridged to the client's tool_use blocks.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "magpie-plugin",
+    "notion",
+    "notion-ai",
+    "tool-calling"
+  ],
+  "magpie": {
+    "maxConcurrency": 1
+  }
+}
