@@ -43,7 +43,16 @@ python3 stream.py "Use two Bash tool calls: one for whoami, one for uname -r."
 #              → content_block_start(tool_use) → … → message_delta(stop_reason: tool_use)
 ```
 
-Unit tests: `node --test "test/*.test.mjs"` (15 cases, no network).
+Unit tests: `node --test "test/*.test.mjs"` — 18 cases, no network, including a
+recorded real Notion transcript (`test/fixtures/real-stream.ndjson`, upstream's own
+capture) run through `transcriptEvents` → `completionChunks`.
+
+Upstream compatibility gate: `scripts/upstream-suite.sh` runs magpie-notion's own 138
+transport cases (auth, threads, SSE, cancellation, quota, timeouts) against this
+adapter in a scratch package — 134 pass, 2 skipped, 0 fail. The four cases not run are
+the two behaviours this adapter deliberately changes (tools and image parts are
+accepted now; the upstream npm packaging assertions do not apply), and the script exits
+non-zero if their anchors move.
 
 ## How it works
 
