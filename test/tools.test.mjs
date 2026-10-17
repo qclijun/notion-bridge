@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { _internal } from "../core.mjs"
-import { compactSchema, contentText, injectProtocol, parseToolCalls, prose, stripProtocol, toolName, toolPreamble } from "../tools.mjs"
+import { compactSchema, contentText, injectProtocol, parseToolCalls, prose, refusedToAct, stripProtocol, toolName, toolPreamble } from "../tools.mjs"
 
 const bash = { name: "Bash", description: "Run a shell command\nsecond line", input_schema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" } }, required: ["command"] } }
 
@@ -36,17 +36,40 @@ test("toolName reads both definition shapes", () => {
 test("toolPreamble states the protocol, lists tools once, honours choice", () => {
   const text = toolPreamble([bash], { parallel: false })
   assert.match(text, /^\[MAGPIE_TOOL_PROTOCOL\]/)
-  assert.match(text, /NO built-in tools/)
+  // The three lines that answer the two live refusals: where the block comes
+  // from, that writing a call is not running it, and that the model's own
+  // sandbox is the wrong machine.
+  assert.match(text, /Added by the client application that sent you this conversation/)
+  assert.match(text, /Writing a call does not run it/)
+  assert.match(text, /Your sandbox is a different computer/)
+  assert.match(text, /Wrong reply, do not write this: "I ran it in my sandbox"/)
   assert.match(text, /- Bash: Run a shell command\n    \{command:string\*, timeout:number\}/)
-  assert.match(text, /exactly one <tool_call> tag/)
+  assert.match(text, /the reply is one call tag and nothing else/)
   assert.match(text.trimEnd(), /\[\/MAGPIE_TOOL_PROTOCOL\]$/)
   assert.equal(text.match(/- Bash:/g).length, 1)
-  assert.match(toolPreamble([bash], { choice: "Read" }), /requires a call to `Read`/)
-  assert.match(toolPreamble([bash], { choice: "required" }), /requires a tool call/)
+  assert.match(toolPreamble([bash], { choice: "Read" }), /must contain a call to `Read`/)
+  assert.match(toolPreamble([bash], { choice: "required" }), /must contain a tool call/)
   assert.equal(toolPreamble([]), "")
 })
 
-test("injectProtocol removes its own earlier blocks and lands on the last user message", () => {
+test("the protocol goes into the system message, never the person's words", () => {
+  const withSystem = [
+    { role: "system", content: "You are Claude Code." },
+    { role: "user", content: "first" },
+    { role: "user", content: "second" },
+  ]
+  const preamble = toolPreamble([bash])
+  injectProtocol(withSystem, preamble)
+  assert.equal(withSystem[1].content, "first")
+  assert.equal(withSystem[2].content, "second")
+  assert.ok(withSystem[0].content.startsWith("You are Claude Code.\n\n[MAGPIE_TOOL_PROTOCOL]"))
+
+  injectProtocol(withSystem, preamble)
+  assert.equal(withSystem[0].content.match(/\[MAGPIE_TOOL_PROTOCOL\]/g).length, 1)
+  assert.equal(stripProtocol(withSystem[0].content), "You are Claude Code.")
+})
+
+test("injectProtocol adds a system message rather than writing into the person's turn", () => {
   const messages = [
     { role: "user", content: "first" },
     { role: "assistant", content: "ok" },
@@ -54,13 +77,45 @@ test("injectProtocol removes its own earlier blocks and lands on the last user m
   ]
   const preamble = toolPreamble([bash])
   injectProtocol(messages, preamble)
-  assert.equal(messages[0].content, "first")
-  assert.ok(messages[2].content.startsWith("[MAGPIE_TOOL_PROTOCOL]"))
-  assert.ok(messages[2].content.endsWith("\nsecond"))
+  assert.equal(messages[0].role, "system")
+  assert.equal(messages[0].content, preamble)
+  assert.equal(messages[1].content, "first")
+  assert.equal(messages[3].content, "second")
 
   injectProtocol(messages, preamble)
-  assert.equal(messages[2].content.match(/\[MAGPIE_TOOL_PROTOCOL\]/g).length, 1)
-  assert.equal(stripProtocol(messages[2].content), "second")
+  assert.equal(messages.length, 4)
+  assert.equal(messages[0].content.match(/\[MAGPIE_TOOL_PROTOCOL\]/g).length, 1)
+  assert.equal(messages[3].content, "second")
+})
+
+test("a lone user message gains a system message, so the transcript labels the block", () => {
+  // protocol.mjs renders a single-user conversation as raw text, but anything
+  // with more than one message as [role]-labelled blocks under a line that says
+  // to follow the system instructions. Growing the array is what buys the
+  // label, which is the difference between a protocol and pasted content.
+  const messages = [{ role: "user", content: "read /etc/hostname" }]
+  injectProtocol(messages, toolPreamble([bash]))
+  assert.equal(messages.length, 2)
+  assert.equal(messages[0].role, "system")
+  assert.equal(messages[1].content, "read /etc/hostname")
+})
+
+test("refusedToAct recognizes the refusals this transport actually produced", () => {
+  const refusals = [
+    "I can't run commands on your machine. This Notion chat can only run commands on my own separate Linux sandbox.",
+    "The `<tool_call>` format in what you pasted belongs to a different client (Claude Code), and nothing here would carry it out.",
+    "Writing `<tool_call>` tags in my reply wouldn't run anything, because none of my tools can reach that computer.",
+    "The tool-call format in your message doesn't connect to anything I can reach, so these results come from my sandbox.",
+    "我没法读取你电脑上的 /etc/hostname，只能访问我自己的隔离云端沙箱。",
+  ]
+  for (const refusal of refusals) assert.equal(refusedToAct(refusal), true, refusal.slice(0, 40))
+
+  const answers = [
+    "17 times 3 is 51.",
+    "The hostname in `/etc/hostname` is jerel-TB14.",
+    "```\njerel-TB14\nLinux 7.0.0-38-generic\n```",
+  ]
+  for (const answer of answers) assert.equal(refusedToAct(answer), false, answer.slice(0, 40))
 })
 
 test("parseToolCalls reads tags, fences and bare objects, and filters unknown names", () => {
@@ -99,12 +154,13 @@ test("parseChat accepts tools, flattens tool history and injects the protocol", 
   })
   assert.equal(chat.wantsTools, true)
   assert.deepEqual(chat.toolNames, ["Bash"])
+  assert.equal(chat.messages[0].role, "system")
+  assert.ok(chat.messages[0].content.startsWith("sys\n\n[MAGPIE_TOOL_PROTOCOL]"))
   assert.equal(chat.messages[1].role, "user")
   assert.equal(chat.messages[1].content, "list files")
   assert.equal(chat.messages[2].content, '<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>')
   assert.equal(chat.messages[3].role, "user")
-  assert.ok(chat.messages[3].content.includes("[MAGPIE_TOOL_PROTOCOL]"))
-  assert.ok(chat.messages[3].content.endsWith("<tool_result>a.txt</tool_result>"))
+  assert.equal(chat.messages[3].content, "<tool_result>a.txt</tool_result>")
 })
 
 test("parseChat without tools leaves the conversation alone", () => {
@@ -120,7 +176,7 @@ test("tool_choice none withholds the protocol; a forced tool is named in it", ()
 
   const forced = _internal.parseChat({ model: "m", messages: [{ role: "user", content: "hi" }], tools: [bash], tool_choice: { type: "function", function: { name: "Bash" } } })
   assert.equal(forced.wantsTools, true)
-  assert.match(forced.messages[0].content, /requires a call to `Bash`/)
+  assert.match(forced.messages[0].content, /must contain a call to `Bash`/)
 })
 
 async function* events(list) {

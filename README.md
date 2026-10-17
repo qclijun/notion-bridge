@@ -58,9 +58,10 @@ non-zero if their anchors move.
 
 | Stage | What happens |
 | --- | --- |
-| Request | `tools` are compressed to `- name: description` + `{field:type*}` lines and injected as a `[MAGPIE_TOOL_PROTOCOL]` block at the front of the last user message. Older copies of the block are stripped first, so a long conversation carries exactly one. |
+| Request | `tools` are compressed to `- name: description` + `{field:type*}` lines and injected as a `[MAGPIE_TOOL_PROTOCOL]` block into the system message — a system message of the adapter's own when the client sent none. The block never goes into a user turn: the transport folds the conversation into one Notion message labelled by role, so a block inside `[user]` reads as pasted content and a model with an injection defence refuses it. Older copies are stripped first, so a long conversation carries exactly one. |
 | History | `tool_use` blocks and OpenAI `tool_calls` become `<tool_call>{…}</tool_call>`; `tool_result` and `role: "tool"` become `<tool_result>…</tool_result>`. Notion sees one continuous transcript. |
 | Response | With tools in play the answer is buffered, `<tool_call>` tags are parsed and name-checked against the request's own tool list, prose around them is kept as a text block, and the result goes back as OpenAI `tool_calls` with `finish_reason: "tool_calls"`. Without tools, nothing is buffered and the answer streams as before. |
+| Repair | A reply that refuses to act — says it cannot reach the machine, points at its own sandbox, or calls the protocol text meant for another client — earns exactly one more turn: the model's own refusal, then `(client) Nothing ran: your reply contained no call…`. The trigger is the refusal's wording, never the mere absence of a call, so a prose answer to a plain question is left alone. Measured on Claude Desktop's own transport (6 runs, same request): 4 refusals without the repair turn, 0 with it. |
 
 `tool_choice: "none"` withholds the protocol entirely; a forced tool (`{type:"function",
 function:{name}}`, `"required"`, `"any"`) is named in the protocol as required.
@@ -85,13 +86,15 @@ Anthropic tool translation itself, in both shapes.
 ## Known limits
 
 - **Adherence is the model's, not the plugin's.** `notion/albuquerque-quinn` (Opus 5.5)
-  follows the protocol reliably — tested with 2 and 8 tools, single and parallel calls,
-  prose before a call, and multi-result continuations. `omniberry-sundae` (GPT-6.1 Sol)
-  and `amla-jam` (Haiku 5.5) tend to run their own sandbox instead and answer in text.
-  Use Opus 5.5 for tool-driven work.
+  follows the protocol, including parallel calls and multi-result continuations, but not
+  every turn: measured on Claude Desktop's own transport it refused to act in 4 of 6
+  identical first turns (sandbox answers and "I'm Notion AI, I can't reach your machine"),
+  which is what the repair row above exists for — 0 of 6 after one repair turn.
+  `omniberry-sundae` (GPT-6.1 Sol) and `amla-jam` (Haiku 5.5) run their own sandbox and
+  answer in text; use Opus 5.5 for tool-driven work.
 - **A tool-bearing reply is not incremental.** It must be whole before the tags can be
-  read, so first byte arrives at the end (≈6–9 s on a warm session). Plain answers still
-  stream.
+  read, so first byte arrives at the end (≈6–9 s on a warm session, plus a second model
+  call when a repair turn fires). Plain answers still stream.
 - **Notion native tool calls are impossible.** The transport's `policies` have no switch
   for Notion's own tools, so the protocol is the only channel.
 - **The transport files are vendored** (see `VENDOR.md`). Upstream fixes are not picked

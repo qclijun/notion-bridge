@@ -25,7 +25,7 @@
 
 import { randomUUID } from "node:crypto"
 import * as localSession from "./session.mjs"
-import { contentText, injectProtocol, parseToolCalls, prose, tagFor, toolName, toolPreamble } from "./tools.mjs"
+import { contentText, injectProtocol, parseToolCalls, prose, refusedToAct, REPAIR, tagFor, toolName, toolPreamble } from "./tools.mjs"
 
 const ID = "notion"
 const VIRTUAL_API = "https://notion.invalid/v1"
@@ -101,7 +101,26 @@ function parseChat(body) {
 
 // These events are an adapter contract, not a claim about Notion's wire format.
 // A decoder must yield text deltas and one explicit done; EOF alone is a failure.
-async function* completionChunks(events, model, signal, chat) {
+// collect drains one transport answer into text and a finish reason. A reply
+// that may carry a tool call has to be whole before its tags can be read, so
+// both the first answer and a repair turn go through here.
+async function collect(events, signal) {
+  let text = ""
+  let finish = "stop"
+  for await (const event of events) {
+    signal.throwIfAborted()
+    if (event?.type === "text" && typeof event.text === "string") text += event.text
+    else if (event?.type === "done" && ["stop", "length", "content_filter"].includes(event.finishReason ?? "stop")) {
+      finish = event.finishReason ?? "stop"
+      break
+    } else {
+      throw new ProviderError(502, "invalid_upstream_event", "Notion AI returned an unsupported response event.")
+    }
+  }
+  return { text, finish }
+}
+
+async function* completionChunks(events, model, signal, chat, repair) {
   const id = "chatcmpl-" + randomUUID()
   const created = Math.floor(Date.now() / 1000)
   const chunk = (delta, finish_reason = null) => ({ id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta, finish_reason }] })
@@ -110,19 +129,20 @@ async function* completionChunks(events, model, signal, chat) {
   let buffered = ""
   let finish = "stop"
   try {
-    for await (const event of events) {
-      signal.throwIfAborted()
-      if (event?.type === "text" && typeof event.text === "string") {
-        if (!event.text) continue
-        // A reply that may be a tool call has to be whole before it can be
-        // read, so the stream degrades to one answer. Plain answers stream.
-        if (wantsTools) buffered += event.text
-        else yield chunk({ content: event.text })
-      } else if (event?.type === "done" && ["stop", "length", "content_filter"].includes(event.finishReason ?? "stop")) {
-        finish = event.finishReason ?? "stop"
-        break
-      } else {
-        throw new ProviderError(502, "invalid_upstream_event", "Notion AI returned an unsupported response event.")
+    if (wantsTools) {
+      ;({ text: buffered, finish } = await collect(events, signal))
+    } else {
+      for await (const event of events) {
+        signal.throwIfAborted()
+        if (event?.type === "text" && typeof event.text === "string") {
+          if (!event.text) continue
+          yield chunk({ content: event.text })
+        } else if (event?.type === "done" && ["stop", "length", "content_filter"].includes(event.finishReason ?? "stop")) {
+          finish = event.finishReason ?? "stop"
+          break
+        } else {
+          throw new ProviderError(502, "invalid_upstream_event", "Notion AI returned an unsupported response event.")
+        }
       }
     }
   } catch (error) {
@@ -133,7 +153,28 @@ async function* completionChunks(events, model, signal, chat) {
     yield chunk({}, finish)
     return
   }
-  const calls = finish === "length" ? [] : parseToolCalls(buffered, chat.toolNames)
+  let calls = finish === "length" ? [] : parseToolCalls(buffered, chat.toolNames)
+  // One repair turn when the model refused to act. The trigger is the model's
+  // own wording, not the absence of a call — a prose answer to a question that
+  // needed no tool is a valid reply, and re-asking it would cost every chat
+  // message a second model call.
+  if (!calls.length && finish !== "length" && repair && refusedToAct(buffered)) {
+    try {
+      const second = await repair(buffered)
+      if (second) {
+        const retry = await collect(second, signal)
+        const retried = retry.finish === "length" ? [] : parseToolCalls(retry.text, chat.toolNames)
+        if (retried.length) {
+          buffered = retry.text
+          finish = retry.finish
+          calls = retried
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) throw signal.reason
+      // A failed retry must not cost the person the answer already in hand.
+    }
+  }
   if (calls.length) {
     const said = prose(buffered)
     if (said) yield chunk({ content: said })
@@ -319,7 +360,15 @@ export function createPlugin(protocol, options = {}) {
               scope.signal.throwIfAborted()
               const auth = await reader.read(await getAuth())
               const events = await protocol.open({ auth, chat, signal: scope.signal })
-              const chunks = completionChunks(events, chat.model, scope.signal, chat)
+              // repair is the only conversational correction this adapter adds:
+              // the model's refusal, then the client saying nothing ran. It is a
+              // second turn because a second turn is what the model answers.
+              const repair = (previous) => protocol.open({
+                auth,
+                chat: { ...chat, messages: [...chat.messages, { role: "assistant", content: previous }, { role: "user", content: REPAIR }] },
+                signal: scope.signal,
+              })
+              const chunks = completionChunks(events, chat.model, scope.signal, chat, repair)
               if (chat.stream) return streamResponse(chunks, scope.close)
               try { return await bufferedResponse(chunks) } finally { scope.close() }
             } catch (error) {
