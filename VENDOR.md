@@ -21,7 +21,7 @@ adapter (`scripts/upstream-suite.sh`).
 
 ## Provenance
 
-- Upstream checkout: `/home/jerel/workspace/GitHub/magpie-notion` @ `d23d1a9`
+- Upstream checkout: `../magpie-notion` (sibling of this repo) @ `d23d1a9`
   ("Update project name and description in README"), version 0.2.0
 - The same bytes are what magpie installed: `@GH@resucdueff-magpie-notion-a99793a@@@1`
   in `~/.cache/magpie/bun/install-cache` (verified with `diff` on every `.mjs` file)
@@ -30,7 +30,7 @@ adapter (`scripts/upstream-suite.sh`).
 ## Re-vendoring after an upstream release
 
 ```sh
-UP=/home/jerel/workspace/GitHub/magpie-notion      # or a fresh clone
+UP=../magpie-notion              # or a fresh clone
 git -C "$UP" pull
 cp "$UP"/{protocol,session,transcript}.mjs .
 git diff --stat                 # transport: what upstream changed

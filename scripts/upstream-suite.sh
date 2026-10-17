@@ -15,9 +15,9 @@
 # Usage: scripts/upstream-suite.sh [path-to-upstream-checkout]
 set -euo pipefail
 
-UPSTREAM=${1:-${UPSTREAM:-/home/jerel/workspace/GitHub/magpie-notion}}
-BUN=${BUN:-$HOME/.bun/bin/bun}
 here=$(cd "$(dirname "$0")/.." && pwd)
+UPSTREAM=${1:-${UPSTREAM:-$here/../magpie-notion}}
+BUN=${BUN:-$HOME/.bun/bin/bun}
 
 [ -d "$UPSTREAM/test" ] || { echo "no upstream checkout at $UPSTREAM" >&2; exit 1; }
 [ -x "$BUN" ] || { echo "no bun at $BUN" >&2; exit 1; }

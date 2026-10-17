@@ -12,11 +12,14 @@ already renders as the client's own `tool_use` blocks, streaming included.
 ## Install
 
 ```sh
-cd ~/Downloads
-./magpie-linux-amd64 plugin add /home/jerel/workspace/GitHub/notion-bridge
+# from this repository's root
+REPO=$(pwd)
+cd ~/Downloads          # wherever magpie's binary lives
+
+./magpie-linux-amd64 plugin add "$REPO"
 # then restart the gateway
 kill -TERM $(pgrep -f "^\./magpie-linux-amd64")
-cd ~/Downloads && setsid env -u ELECTRON_RUN_AS_NODE ./magpie-linux-amd64 > /tmp/magpie.log 2>&1 < /dev/null &
+setsid env -u ELECTRON_RUN_AS_NODE ./magpie-linux-amd64 > /tmp/magpie.log 2>&1 < /dev/null &
 ```
 
 `plugin add` with a local path records the path, it does not copy: edits to this repo
@@ -27,7 +30,7 @@ model aliases keep working — nothing to sign in again, no model names to chang
 `plugin list` should say this plugin serves `notion`:
 
 ```
-/home/jerel/workspace/GitHub/notion-bridge  on
+/path/to/notion-bridge  on
   notion (Notion AI, 29 models)  signed in
 ```
 
@@ -103,7 +106,7 @@ Anthropic tool translation itself, in both shapes.
 ## Rollback
 
 ```sh
-./magpie-linux-amd64 plugin off /home/jerel/workspace/GitHub/notion-bridge
+./magpie-linux-amd64 plugin off "$REPO"
 ./magpie-linux-amd64 plugin use github:resucdueff/magpie-notion notion
 # restart the gateway
 ```
